@@ -234,7 +234,7 @@ async function processRecord(item, opts) {
         log(`  图片[${angle}] ${(buf.length / 1024).toFixed(0)}KB`)
       }
     }
-    if (!images.length) throw new Error('记录里没有任何图片附件，无法生成报告')
+    // 注意：空图校验推迟到款式图合并之后——只传「各款式多角度图」不传正面图是合法输入
 
     // 系列款式（可选，仅配置了字段名时生效）：各款多角度图附件 + 款式明细文本
     // 图片按「款式明细」每行的张数依次对应款式名，legend 逐张命名为「款式「xx」第n张」，
@@ -263,6 +263,7 @@ async function processRecord(item, opts) {
       stylesSection = detailRaw.trim() || styleAtts.map((_, i) => `${i + 1}. ${styleNames[i]}：1张`).join('\n')
       log(`  款式: ${styleAtts.length} 张款式图 / ${parsed.length} 款（明细解析）`)
     }
+    if (!images.length) throw new Error('没有任何图片附件（正面图与各款式多角度图至少传其一），无法生成报告')
 
     // 模块30: frag（图片块）与 legend（图片清单文字）——款式图已并入 images，legend 一并列出
     const frag = images.map((im) => ({ type: 'image_url', image_url: { url: im.dataUri } }))
