@@ -119,6 +119,9 @@ const F = {
   imgAnglesOther: '【上传】其他角度图',
   multiAngles: '【输入】指定角度',
   countAngles: '【输入】每组张数',
+  // angles 款式卡片（STEP2 各款式多角度图通道，对齐报告页）
+  styleAnglesImg: '【上传】各款多角度图',
+  styleAnglesText: '【输入】款式明细',
   // model 表
   statusModel: '【状态】',
   countModel: '需要图片数',
@@ -849,11 +852,45 @@ async function anglesHandler(item, S) {
   }
   if (!uploaded.length) {
     const legacy = attFirst(fields, F.imgAngles)
-    if (!legacy) throw new Error('请至少上传一个角度的产品图')
-    const buf = await downloadMedia(legacy.file_token)
-    const b64 = buf.toString('base64')
-    uploaded.push({ cn: '正面', b64, mime: b64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg' })
-    log(`[${S.label}多角度] 旧版基础图 → 视作[正面] ${(buf.length / 1024).toFixed(0)}KB`)
+    if (legacy) {
+      const buf = await downloadMedia(legacy.file_token)
+      const b64 = buf.toString('base64')
+      uploaded.push({ cn: '正面', b64, mime: b64.startsWith('iVBOR') ? 'image/png' : 'image/jpeg' })
+      log(`[${S.label}多角度] 旧版基础图 → 视作[正面] ${(buf.length / 1024).toFixed(0)}KB`)
+    }
+  }
+
+  // 款式卡片（STEP2 各款式多角度图，对齐报告页）：全部作为补充参考图；
+  // 已传款式图时无需再传正面图（仅款式图时首张视作「正面」入口）
+  const styleText = textOf(fields[F.styleAnglesText])
+  const styleImgs = []  // [{cn, b64, mime}]，cn = 「款式·款名」
+  for (const att of attAll(fields, F.styleAnglesImg)) {
+    try {
+      const buf = await downloadMedia(att.file_token)
+      const ext = String(att.name || '').split('.').pop().toLowerCase()
+      styleImgs.push({ cn: '', b64: buf.toString('base64'), mime: att.type || (ext === 'png' ? 'image/png' : 'image/jpeg') })
+    } catch (e) { log(`[${S.label}多角度] 款式图下载失败（跳过）:`, e.message.slice(0, 100)) }
+  }
+  if (styleImgs.length) {
+    // 按「1. 款名：X张（第a-b张）」明细对齐每张图属于哪一款（api/generations 生成该格式）
+    const ranges = []
+    for (const line of styleText.split(/\r?\n/)) {
+      const m = line.match(/^\s*\d+\.\s*(.+?)：(\d+)张（第(\d+)-(\d+)张/)
+      if (m) ranges.push({ name: m[1].trim(), a: Number(m[3]), b: Number(m[4]) })
+    }
+    styleImgs.forEach((s, i) => {
+      const rg = ranges.find((r) => i + 1 >= r.a && i + 1 <= r.b)
+      s.cn = rg ? `款式·${rg.name}` : `款式图${i + 1}`
+      log(`[${S.label}多角度] 款式参考[${s.cn}]`)
+    })
+  }
+  // 校验：角度图与款式图至少其一
+  if (!uploaded.length && !styleImgs.length) throw new Error('请至少上传一个角度的产品图，或在「各款式多角度图」中为至少一个款式上传图片')
+  // 仅款式图：第一张款式图视作「正面」入口（保证默认视角规划可运行），其余款式图作补充参考
+  if (!uploaded.length && styleImgs.length) {
+    const first = styleImgs.shift()
+    uploaded.push({ cn: '正面', b64: first.b64, mime: first.mime })
+    log(`[${S.label}多角度] 仅款式图 → 首张[${first.cn}]视作[正面]`)
   }
 
   // 指定角度过滤：空或含「随机」= 全部已上传角度；否则只取选中的（常规角度必须有图；
@@ -868,7 +905,7 @@ async function anglesHandler(item, S) {
 
   const count = Math.max(1, Number(textOf(fields[F.countAngles])) || 1)
   const report = textOf(fields[F.reportText]) || lookupText(fields[LOOKUP_REPORT]) || '（无，按产品图自行分析）'
-  log(`[${S.label}多角度] ${recordId} | 角度: ${picked.map((u) => u.cn).join('、')} | 每组 ${count} 张`)
+  log(`[${S.label}多角度] ${recordId} | 角度: ${picked.map((u) => u.cn).join('、')} | 每组 ${count} 张${styleImgs.length ? ` | 款式参考图 ${styleImgs.length} 张` : ''}`)
 
   // Make route1 模块34: 主记录状态=🎨生成中（认领时已写触发标记，这里补状态）
   await updateRecord(S.T.angles, recordId, { [F.statusAngles]: '🎨生成中' })
@@ -878,10 +915,14 @@ async function anglesHandler(item, S) {
   const prompt = fill(S.P.angles_prompt, { '{{109.report_content}}': report })
     + `\n\n注意：本次只需要输出以下角度的分块：${picked.map((u) => u.cn).join('、')}。每个角度输出 ${count} 个分块（第一行「角度：xxx」格式保持不变；同一角度输出多块时，请在构图、光线、景别上做变化，但角度本身不变）。`
     + (detailNotes ? `\n细节角度的拍摄任务定义：${detailNotes}。这些细节角度的区块开头也必须写「角度：面部细节」这类原始角度名，一字不差。` : '')
-  // 规划识图：附带全部已上传角度图（带角度标注），规划模型才能理解产品完整外观
+  // 规划识图：附带全部已上传角度图 + 款式图（带标注），规划模型才能理解产品完整外观
+  const planPool = [...uploaded, ...styleImgs]
+  const poolNote = styleImgs.length
+    ? `随提示词附带的 ${planPool.length} 张图片依次是${planPool.map((u) => '【' + u.cn + '】').join('')}的实拍图（【款式·xx】为同一产品的各款式多角度图），请基于全部参考图理解产品结构，再为各角度规划提示词。`
+    : `随提示词附带的 ${planPool.length} 张图片依次是同一产品的${planPool.map((u) => '【' + u.cn + '】').join('')}视角实拍图，请基于全部参考图理解产品结构，再为各角度规划提示词。`
   const planParts = [
-    { type: 'text', text: prompt + `\n\n随提示词附带的 ${uploaded.length} 张图片依次是同一产品的${uploaded.map((u) => '【' + u.cn + '】').join('')}视角实拍图，请基于全部参考图理解产品结构，再为各角度规划提示词。` },
-    ...uploaded.map((u) => ({ type: 'image_url', image_url: { url: `data:${u.mime};base64,${u.b64}` } })),
+    { type: 'text', text: prompt + '\n\n' + poolNote },
+    ...planPool.map((u) => ({ type: 'image_url', image_url: { url: `data:${u.mime};base64,${u.b64}` } })),
   ]
   const raw = await chat(MODEL_PROMPT_GEN, 0.7, planParts)
   const blocks = splitBlocks(raw)
@@ -900,8 +941,8 @@ async function anglesHandler(item, S) {
       const img = uploaded.find((u) => u.cn === angleName)
         || picked.find((u) => !u.virtual && angleName.includes(u.cn))
         || uploaded[0]
-      // 全量附带已上传角度图：目标角度图排第一（主参考），其余跟后——被遮挡区域由其他视角图定死
-      const ordered = [img, ...uploaded.filter((u) => u !== img)]
+      // 全量附带已上传角度图 + 款式图：目标角度图排第一（主参考），其余跟后——被遮挡区域由其他视角图定死
+      const ordered = [img, ...uploaded.filter((u) => u !== img), ...styleImgs]
       const crossNote = `\n\n重要约束：随提示词附带的 ${ordered.length} 张图片依次是同一产品的${ordered.map((u) => '【' + u.cn + '】').join('')}视角实拍图，本次目标画面为「${angleName}」视角。这些参考图共同定义该产品的唯一外观：目标视角下不可见或被遮挡的区域${CROSS_PART[S.key]}，必须与显示该区域最清晰的参考图逐点一致——形状、数量、位置、比例、颜色完全复刻，禁止依据常识或同类产品重新设计；只能改变观察角度、光影与构图，不能重新设计产品的任何特征。若参考图之间出现同一区域的差异，以显示该区域最清晰、最完整的一张为准。`
       const childId = await addRecord(S.T.angles, {
         [F.angleAngles]: angleName,
@@ -1137,8 +1178,8 @@ function classify(tableId, fields) {
   if (tableId === TT.angles) {
     const out = f[F.outAngles]
     const noOutput = out == null || out === '' || (Array.isArray(out) && out.length === 0)
-    // 主/子记录区分：主记录有 8 角度图任一（旧版兼容【上传】产品基础图片）；子记录无图
-    const hasImg = ANGLE_FIELDS.some(([, fd]) => attFirst(f, fd)) || attFirst(f, F.imgAngles)
+    // 主/子记录区分：主记录有 8 角度图任一（旧版兼容【上传】产品基础图片）或款式卡片图；子记录无图
+    const hasImg = ANGLE_FIELDS.some(([, fd]) => attFirst(f, fd)) || attFirst(f, F.imgAngles) || attFirst(f, F.styleAnglesImg)
     return hasImg && noOutput ? 'angles' : null
   }
   if (tableId === TT.model) {
