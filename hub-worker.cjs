@@ -176,6 +176,15 @@ const ANGLE_FIELDS = [
   ['其他', '【上传】其他角度图'],
 ]
 
+// 治愈系细节角度（虚拟角度，无对应上传图位）：仅 IP 套件表单提供这些选项；
+// 参考图自动取全部已上传角度图（正面优先），规划时附加定义说明
+const DETAIL_ANGLES_IP = {
+  '面部细节': '微距特写IP形象的脸部：眼睛、表情、腮红、口鼻与绒毛/搪胶质感，五官清晰、表情治愈，浅景深让面部成为唯一焦点',
+  '材质细节': '微距拍摄产品表面材质与触感：毛绒纤维的蓬松软糯、搪胶的哑光细腻、植绒与刺绣的立体肌理、亚克力的通透等，景深极浅只有局部清晰',
+  '设计细节': '微距拍摄最有辨识度的工艺局部：刺绣纹样、缝线走线、配件挂扣、串珠链条、印花烫金等设计亮点，突出做工精致与可爱巧思',
+  '手捧特写': '干净柔软的手轻轻捧起或捏住产品，体现真实尺寸与治愈陪伴感，柔和暖光，画面温馨可爱',
+}
+
 // detail code63 的参考图指令（原样）
 const DETAIL_REF_INSTRUCTION = "\n\n参考图可能是同一产品的其他角度。必须严格保持参考图中的产品结构、材质、颜色、LOGO、位置、比例和细节一致。如果参考图视角与目标画面角度不同，请根据参考图推导目标角度，只改变观察角度，不要重新设计产品，不要改变包装和外观。"
 // angles code177 的提示词后缀（原样）
@@ -847,12 +856,13 @@ async function anglesHandler(item, S) {
     log(`[${S.label}多角度] 旧版基础图 → 视作[正面] ${(buf.length / 1024).toFixed(0)}KB`)
   }
 
-  // 指定角度过滤：空或含「随机」= 全部已上传角度；否则只取选中的（且必须有图）
+  // 指定角度过滤：空或含「随机」= 全部已上传角度；否则只取选中的（常规角度必须有图；
+  // 细节角度为虚拟角度——无上传图位，自动以已上传图为主参考，正面优先）
   const multiRaw = textOf(fields[F.multiAngles])
   const picked = multiRaw.includes('随机') || multiRaw.trim() === ''
     ? uploaded
     : multiRaw.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean)
-      .map((cn) => uploaded.find((u) => u.cn === cn))
+      .map((cn) => uploaded.find((u) => u.cn === cn) || (DETAIL_ANGLES_IP[cn] ? { cn, virtual: true } : null))
       .filter(Boolean)
   if (!picked.length) throw new Error(`指定角度里没有已上传的图（指定：${multiRaw}；已上传：${uploaded.map((u) => u.cn).join('、')}）`)
 
@@ -863,9 +873,11 @@ async function anglesHandler(item, S) {
   // Make route1 模块34: 主记录状态=🎨生成中（认领时已写触发标记，这里补状态）
   await updateRecord(S.T.angles, recordId, { [F.statusAngles]: '🎨生成中' })
 
-  // HTTP132: 8 屏规划提示词 + 本次范围限定
+  // HTTP132: 8 屏规划提示词 + 本次范围限定（细节角度附加定义，帮规划模型理解拍摄任务）
+  const detailNotes = picked.filter((u) => DETAIL_ANGLES_IP[u.cn]).map((u) => `「${u.cn}」=${DETAIL_ANGLES_IP[u.cn]}`).join('；')
   const prompt = fill(S.P.angles_prompt, { '{{109.report_content}}': report })
     + `\n\n注意：本次只需要输出以下角度的分块：${picked.map((u) => u.cn).join('、')}。每个角度输出 ${count} 个分块（第一行「角度：xxx」格式保持不变；同一角度输出多块时，请在构图、光线、景别上做变化，但角度本身不变）。`
+    + (detailNotes ? `\n细节角度的拍摄任务定义：${detailNotes}。这些细节角度的区块开头也必须写「角度：面部细节」这类原始角度名，一字不差。` : '')
   // 规划识图：附带全部已上传角度图（带角度标注），规划模型才能理解产品完整外观
   const planParts = [
     { type: 'text', text: prompt + `\n\n随提示词附带的 ${uploaded.length} 张图片依次是同一产品的${uploaded.map((u) => '【' + u.cn + '】').join('')}视角实拍图，请基于全部参考图理解产品结构，再为各角度规划提示词。` },
@@ -884,9 +896,9 @@ async function anglesHandler(item, S) {
       const lines = blocks[i].trim().split('\n')
       const angleName = String(lines[0] || '').replace(/角度：/g, '').trim()
       const bodyText = lines.slice(1).join('\n').trim() || blocks[i].trim()
-      // 匹配该角度的上传图：精确匹配，其次包含匹配（如「正面特写」含「正面」），兜底第一张
+      // 匹配该角度的上传图：精确匹配，其次包含匹配（如「正面特写」含「正面」，虚拟细节角度跳过），兜底第一张
       const img = uploaded.find((u) => u.cn === angleName)
-        || picked.find((u) => angleName.includes(u.cn))
+        || picked.find((u) => !u.virtual && angleName.includes(u.cn))
         || uploaded[0]
       // 全量附带已上传角度图：目标角度图排第一（主参考），其余跟后——被遮挡区域由其他视角图定死
       const ordered = [img, ...uploaded.filter((u) => u !== img)]
