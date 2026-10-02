@@ -1149,6 +1149,9 @@ const HANDLERS = {
     reportTpl: S.P.report_prompt,
     ocrPrompt: S.P.ocr_prompt,
     label: `[${S.label}报告]`,
+    // 系列款式支持（IP 套件）：模板含 {{STYLE_SECTIONS}} 时才读取款式明细/各款多角度图两个字段
+    styleImgField: S.P.report_prompt.includes('{{STYLE_SECTIONS}}') ? '【上传】各款多角度图' : '',
+    styleTextField: S.P.report_prompt.includes('{{STYLE_SECTIONS}}') ? '【输入】款式明细' : '',
   }),
   main: mainImgHandler,
   xiutu: xiutuHandler,
